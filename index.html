@@ -1,142 +1,312 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dominó Realtime Pro</title>
-    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-database-compat.js"></script>
-    <style>
-        :root {
-            --bg: #0f172a; --card: #1e293b; --accent: #3b82f6;
-            --danger: #ef4444; --text: #f8fafc; --success: #22c55e;
-        }
-        body { 
-            font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text);
-            margin: 0; padding: 20px; display: flex; justify-content: center;
-        }
-        .app-container { width: 100%; max-width: 480px; }
-        .header { text-align: center; margin-bottom: 20px; }
-        .card { 
-            background: var(--card); padding: 20px; border-radius: 20px; 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.3); border: 1px solid #334155; 
-        }
-        .player-item {
-            display: grid; grid-template-columns: 1fr auto auto;
-            align-items: center; gap: 12px; background: #334155;
-            padding: 12px 16px; border-radius: 12px; margin-bottom: 10px;
-            border: 2px solid transparent; transition: 0.3s;
-        }
-        .is-losing { border-color: var(--danger); box-shadow: 0 0 15px rgba(239, 68, 68, 0.2); }
-        input { 
-            background: #0f172a; border: 1px solid #475569; color: white; 
-            padding: 8px; border-radius: 8px; 
-        }
-        .player-name { background: transparent !important; border: none !important; font-size: 1.1rem; }
-        .score-display { font-size: 1.6rem; font-weight: 800; color: #fbbf24; min-width: 40px; text-align: center; }
-        button { border: none; border-radius: 10px; cursor: pointer; font-weight: 700; }
-        .btn-add { width: 45px; height: 45px; background: var(--danger); color: white; font-size: 1.5rem; border-radius: 50%; }
-        .btn-primary { background: var(--accent); color: white; padding: 15px; width: 100%; margin-top: 10px; }
-        #resumo-final { 
-            margin-top: 20px; padding: 15px; border-radius: 12px; 
-            background: rgba(59, 130, 246, 0.1); border: 1px solid var(--accent); display: none; 
-        }
-    </style>
-</head>
-<body>
 
-<div class="app-container">
-    <div class="header"><h1>Dominó Master 🎲</h1></div>
+import React, { useState, useEffect, useCallback } from 'react';
+import { Player, GameState } from './types';
+import { Icons, COLORS } from './constants';
+import { getMatchAnalysis } from './services/geminiService';
 
-    <div id="setup-screen" class="card">
-        <h3>Nova Partida</h3>
-        <label>Jogadores (2-7):</label>
-        <input type="number" id="numJogadores" value="4" min="2" max="7" style="width: 50px;">
-        <button class="btn-primary" onclick="iniciarJogo()">CRIAR MESA</button>
-    </div>
+// --- CONFIGURAÇÃO FIREBASE ---
+// Preencha aqui para ativar o tempo real
+const firebaseConfig = {
+  apiKey: "",
+  authDomain: "",
+  databaseURL: "",
+  projectId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  appId: ""
+};
 
-    <div id="game-screen" style="display:none;" class="card">
-        <div style="margin-bottom:15px; display:flex; align-items:center; gap:10px;">
-            <span>Valor Derrota R$:</span>
-            <input type="number" id="valorDerrota" value="2.00" step="0.50" style="width:80px;">
-        </div>
-        
-        <div id="player-list"></div>
-        <div id="resumo-final"></div>
+const App: React.FC = () => {
+  const [gameState, setGameState] = useState<GameState | null>(null);
+  const [numPlayers, setNumPlayers] = useState(4);
+  const [pointValue, setPointValue] = useState(2.0);
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<string>("");
+  const [loadingAi, setLoadingAi] = useState(false);
 
-        <button class="btn-primary" style="background:var(--success)" onclick="mostrarResumo()">VER ACERTO DE CONTAS</button>
-        <button class="btn-primary" style="background:#475569; font-size:0.8rem;" onclick="resetarTudo()">Encerrar Jogo</button>
-    </div>
-</div>
-
-<script>
-    // Configuração do seu projeto
-    const firebaseConfig = {
-        apiKey: "AIzaSyC58BrVTOc8Wh8A_HIvfUT15LRyQWWEt-0",
-        authDomain: "dominorealtime.firebaseapp.com",
-        projectId: "dominorealtime",
-        databaseURL: "https://dominorealtime-default-rtdb.firebaseio.com", // Ajustado para o padrão Firebase
-        storageBucket: "dominorealtime.firebasestorage.app",
-        messagingSenderId: "398958242183",
-        appId: "1:398958242183:web:4d5bddadf5d54803e14b22"
-    };
-
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database().ref('partida_atual');
-
-    function iniciarJogo() {
-        const qtd = document.getElementById('numJogadores').value;
-        let jogadores = {};
-        for(let i=1; i<=qtd; i++) {
-            jogadores[`p${i}`] = { nome: `Jogador ${i}`, pontos: 0 };
-        }
-        db.set({ jogadores, ativa: true });
+  // Load from local storage for simulation
+  useEffect(() => {
+    const saved = localStorage.getItem('domino_pro_state');
+    if (saved) {
+      setGameState(JSON.parse(saved));
     }
+  }, []);
 
-    db.on('value', (snapshot) => {
-        const data = snapshot.val();
-        if (!data || !data.ativa) {
-            document.getElementById('setup-screen').style.display = 'block';
-            document.getElementById('game-screen').style.display = 'none';
-            return;
-        }
-        document.getElementById('setup-screen').style.display = 'none';
-        document.getElementById('game-screen').style.display = 'block';
-        
-        const container = document.getElementById('player-list');
-        container.innerHTML = '';
-        
-        let maxP = Math.max(...Object.values(data.jogadores).map(j => j.pontos));
+  // Save to local storage
+  useEffect(() => {
+    if (gameState) {
+      localStorage.setItem('domino_pro_state', JSON.stringify(gameState));
+    } else {
+      localStorage.removeItem('domino_pro_state');
+    }
+  }, [gameState]);
 
-        for (let id in data.jogadores) {
-            const j = data.jogadores[id];
-            const losingClass = (j.pontos === maxP && maxP > 0) ? 'is-losing' : '';
-            container.innerHTML += `
-                <div class="player-item ${losingClass}">
-                    <input type="text" class="player-name" value="${j.nome}" onchange="renomear('${id}', this.value)">
-                    <span class="score-display">${j.pontos}</span>
-                    <button class="btn-add" onclick="updatePonto('${id}', ${j.pontos})">+</button>
-                </div>`;
-        }
+  const initGame = () => {
+    const players: Player[] = Array.from({ length: numPlayers }, (_, i) => ({
+      id: `p${i + 1}`,
+      name: `Jogador ${i + 1}`,
+      points: 0,
+    }));
+    
+    setGameState({
+      players,
+      pointValue,
+      isActive: true,
+      createdAt: Date.now(),
     });
+  };
 
-    function updatePonto(id, atual) { db.child('jogadores').child(id).update({ pontos: atual + 1 }); }
-    function renomear(id, nome) { db.child('jogadores').child(id).update({ nome: nome }); }
+  const updatePoints = (id: string, delta: number) => {
+    if (!gameState) return;
+    setGameState({
+      ...gameState,
+      players: gameState.players.map(p => 
+        p.id === id ? { ...p, points: Math.max(0, p.points + delta) } : p
+      )
+    });
+  };
 
-    function mostrarResumo() {
-        const v = parseFloat(document.getElementById('valorDerrota').value);
-        db.child('jogadores').once('value', (s) => {
-            const jogs = s.val();
-            let h = "<h3>💰 Resumo:</h3>";
-            for(let id in jogs) {
-                h += `<p>${jogs[id].nome}: <b>R$ ${(jogs[id].pontos * v).toFixed(2)}</b></p>`;
-            }
-            document.getElementById('resumo-final').innerHTML = h;
-            document.getElementById('resumo-final').style.display = 'block';
-        });
+  const renamePlayer = (id: string, name: string) => {
+    if (!gameState) return;
+    setGameState({
+      ...gameState,
+      players: gameState.players.map(p => 
+        p.id === id ? { ...p, name } : p
+      )
+    });
+  };
+
+  const resetGame = () => {
+    if (window.confirm("Deseja realmente zerar a partida?")) {
+      setGameState(null);
+      setIsSummaryOpen(false);
+      setAiAnalysis("");
     }
+  };
 
-    function resetarTudo() { if(confirm("Zerar para todos?")) db.remove(); }
-</script>
-</body>
-</html>
+  const generateAiAnalysis = async () => {
+    if (!gameState) return;
+    setLoadingAi(true);
+    try {
+      const analysis = await getMatchAnalysis(gameState.players, gameState.pointValue);
+      setAiAnalysis(analysis);
+    } catch (err) {
+      setAiAnalysis("Falha ao consultar a IA.");
+    } finally {
+      setLoadingAi(false);
+    }
+  };
+
+  if (!gameState) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-slate-950">
+        <div className="w-full max-w-md space-y-8 animate-in fade-in zoom-in duration-500">
+          <header className="text-center">
+            <h1 className="text-4xl font-extrabold tracking-tight text-white mb-2">
+              Dominó <span className="bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">Pro</span>
+            </h1>
+            <p className="text-slate-400 font-medium">Controle de Placar Premium</p>
+          </header>
+
+          <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-3xl shadow-2xl glass-effect">
+            <div className="space-y-6">
+              <div>
+                <label className="block text-sm font-semibold text-slate-300 mb-3">
+                  Quantidade de Jogadores
+                </label>
+                <div className="grid grid-cols-6 gap-2">
+                  {[2, 3, 4, 5, 6, 7].map(n => (
+                    <button
+                      key={n}
+                      onClick={() => setNumPlayers(n)}
+                      className={`h-12 rounded-xl text-lg font-bold transition-all ${
+                        numPlayers === n 
+                        ? 'bg-blue-600 text-white ring-4 ring-blue-600/20' 
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-300 mb-2">
+                  Valor por Ponto (R$)
+                </label>
+                <input
+                  type="number"
+                  step="0.50"
+                  value={pointValue}
+                  onChange={(e) => setPointValue(Number(e.target.value))}
+                  className="w-full h-14 px-4 bg-slate-800 border border-slate-700 rounded-xl text-xl font-bold focus:ring-2 focus:ring-blue-500 focus:outline-none text-white"
+                />
+              </div>
+
+              <button
+                onClick={initGame}
+                className="w-full h-14 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-blue-600/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
+              >
+                CRIAR NOVA MESA
+              </button>
+            </div>
+          </div>
+          
+          <p className="text-center text-slate-500 text-sm italic">
+            "No dominó, a melhor jogada é a que faz o parceiro sorrir."
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const maxPoints = Math.max(...gameState.players.map(p => p.points));
+  const minPoints = Math.min(...gameState.players.map(p => p.points));
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 flex justify-center">
+      <div className="w-full max-w-lg space-y-6">
+        <div className="flex justify-between items-center">
+          <h2 className="text-2xl font-bold flex items-center gap-2">
+            <span className="text-blue-500">Mesa</span> #{gameState.createdAt.toString().slice(-4)}
+          </h2>
+          <button 
+            onClick={resetGame}
+            className="p-2 text-slate-400 hover:text-red-400 transition-colors"
+          >
+            <Icons.Trash />
+          </button>
+        </div>
+
+        <div className="grid gap-4">
+          {gameState.players.map(player => {
+            const isLosing = player.points === maxPoints && maxPoints > 0;
+            const isWinning = player.points === minPoints && maxPoints > 0;
+            
+            return (
+              <div 
+                key={player.id}
+                className={`relative group bg-slate-900 border transition-all duration-300 rounded-2xl p-4 flex items-center justify-between shadow-xl ${
+                  isLosing ? 'border-red-500/50 bg-red-950/10' : 'border-slate-800'
+                } ${isWinning ? 'ring-1 ring-emerald-500/30' : ''}`}
+              >
+                <div className="flex-1 space-y-1">
+                  <input
+                    type="text"
+                    value={player.name}
+                    onChange={(e) => renamePlayer(player.id, e.target.value)}
+                    className="bg-transparent border-none text-lg font-semibold focus:outline-none w-full text-slate-100"
+                  />
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-400 uppercase tracking-wider">
+                      R$ {(player.points * gameState.pointValue).toFixed(2)}
+                    </span>
+                    {isLosing && <span className="text-xs font-black text-red-500 flex items-center gap-1"><Icons.Sparkles /> BUCHA</span>}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <div className="flex flex-col items-center">
+                    <span className={`text-3xl font-black ${isLosing ? 'text-red-400' : 'text-amber-400'}`}>
+                      {player.points}
+                    </span>
+                  </div>
+                  
+                  <div className="flex flex-col gap-1">
+                    <button 
+                      onClick={() => updatePoints(player.id, 1)}
+                      className="w-12 h-12 rounded-xl bg-blue-600 hover:bg-blue-500 flex items-center justify-center font-bold text-xl active:scale-90 transition-all shadow-lg"
+                    >
+                      +1
+                    </button>
+                    <button 
+                      onClick={() => updatePoints(player.id, -1)}
+                      className="w-12 h-10 rounded-xl bg-slate-800 hover:bg-slate-700 flex items-center justify-center font-bold text-sm active:scale-90 transition-all opacity-50 hover:opacity-100"
+                    >
+                      -1
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="fixed bottom-0 left-0 right-0 p-4 md:p-8 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent pointer-events-none">
+          <div className="max-w-lg mx-auto flex gap-3 pointer-events-auto">
+            <button
+              onClick={() => setIsSummaryOpen(true)}
+              className="flex-1 h-14 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-xl shadow-emerald-900/20 active:scale-95 transition-all"
+            >
+              <Icons.Trophy /> ACERTAR CONTAS
+            </button>
+          </div>
+        </div>
+
+        <div className="h-24" /> {/* Spacer */}
+      </div>
+
+      {/* Summary Modal */}
+      {isSummaryOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 w-full max-w-md border border-slate-800 rounded-3xl p-6 shadow-2xl relative animate-in slide-in-from-bottom-8 duration-300">
+            <button 
+              onClick={() => setIsSummaryOpen(false)}
+              className="absolute top-4 right-4 text-slate-500 hover:text-white"
+            >
+              ✕
+            </button>
+            
+            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+              <span className="text-emerald-400">💰</span> Resumo do Acerto
+            </h3>
+
+            <div className="space-y-4 mb-8">
+              {gameState.players.map(p => (
+                <div key={p.id} className="flex justify-between items-center p-3 rounded-xl bg-slate-800/50 border border-slate-700/50">
+                  <span className="font-semibold text-slate-300">{p.name}</span>
+                  <div className="text-right">
+                    <div className="text-lg font-bold text-white">R$ {(p.points * gameState.pointValue).toFixed(2)}</div>
+                    <div className="text-xs text-slate-500 font-medium">{p.points} pontos</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-6 pt-6 border-t border-slate-800">
+              <button
+                disabled={loadingAi}
+                onClick={generateAiAnalysis}
+                className="w-full mb-4 py-3 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all border border-slate-700"
+              >
+                {loadingAi ? "Mestre do Dominó pensando..." : (
+                  <>
+                    <Icons.Sparkles /> {aiAnalysis ? "ATUALIZAR ANÁLISE IA" : "PEDIR ANÁLISE AO MESTRE"}
+                  </>
+                )}
+              </button>
+
+              {aiAnalysis && (
+                <div className="p-4 bg-blue-950/20 border border-blue-500/20 rounded-xl mb-4 animate-in zoom-in duration-300">
+                   <p className="text-blue-300 text-sm leading-relaxed italic">
+                    "{aiAnalysis}"
+                   </p>
+                </div>
+              )}
+              
+              <button 
+                onClick={() => setIsSummaryOpen(false)}
+                className="w-full py-4 bg-blue-600 text-white rounded-xl font-black uppercase tracking-widest text-xs hover:bg-blue-500 transition-colors"
+              >
+                Continuar Jogando
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
